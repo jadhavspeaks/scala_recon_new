@@ -237,21 +237,30 @@ class SourceToTargetReconJob extends ReconciliationJob with LazyLogging {
 
     // A cleaner way to build the string if the above expr trick doesn't work directly or is complex:
     // Use create_map and then to_json, or concat_ws after filtering nulls.
-    // For now, let's generate a map and convert to JSON string for structured details.
-    val mismatchDetailMapEntries = mappings.flatMap { mapping =>
+    // For now, let's generate a JSON array of structs for structured details.
+    // Each struct in the array will represent a single mismatched field comparison.
+    val mismatchDetailStructs = mappings.map { mapping =>
       val srcColAliased = s"${mapping.sourceColumn}_src_"
       val tgtColAliased = s"${mapping.targetColumn}_tgt_"
-      Seq(
-        lit(s"${mapping.sourceColumn}_source_value"), col(srcColAliased).cast(StringType),
-        lit(s"${mapping.targetColumn}_target_value"), col(tgtColAliased).cast(StringType),
-        lit(s"${mapping.sourceColumn}_vs_${mapping.targetColumn}_match_status"), col(s"${mapping.sourceColumn}_vs_${mapping.targetColumn}_match").cast(StringType)
-      )
+      // This is the boolean column derived from (srcCol <=> tgtCol)
+      val matchCompareCol = col(s"${mapping.sourceColumn}_vs_${mapping.targetColumn}_match")
+
+      when(not(matchCompareCol), // Only create a struct if this specific pair is a mismatch
+        struct(
+          lit(mapping.sourceColumn).alias("source_column_name"),
+          col(srcColAliased).cast(StringType).alias("source_value"),
+          lit(mapping.targetColumn).alias("target_column_name"),
+          col(tgtColAliased).cast(StringType).alias("target_value")
+        )
+      ).otherwise(lit(null)) // If they match, produce null for this mapping's detail struct
     }
 
+    // Filter out the nulls (where individual pairs matched) and create a JSON array of the mismatch structs
+    // Ensure that expr is available or use selectExpr if it's a DataFrame operation.
+    // Here, we are building a Column expression.
     val mismatchDetailsFinalExpr = when(col("recon_status") === "MISMATCHED",
-        to_json(create_map(mismatchDetailMapEntries:_*))
+      to_json(expr(s"filter(array(${mismatchDetailStructs.map(_.expr.sql).mkString(",")}), x -> x is not null)"))
     ).otherwise(lit(null).cast(StringType))
-
 
     (statusExpr, mismatchDetailsFinalExpr.alias("mismatch_details"))
   }

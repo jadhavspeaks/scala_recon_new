@@ -198,19 +198,27 @@ class BusinessRuleReconJob extends ReconciliationJob with LazyLogging {
       )
       .otherwise(lit("UNKNOWN_ERROR_STATE_BR"))
 
-    val mismatchDetailMapEntries = mappings.flatMap { mapping =>
+    // Each struct in the array will represent a single mismatched field comparison.
+    val mismatchDetailStructs = mappings.map { mapping =>
       val srcColAliased = s"${mapping.sourceColumn}$brSuffix"
       val tgtColAliased = s"${mapping.targetColumn}$tgtSuffix"
-      Seq(
-        lit(s"${mapping.sourceColumn}_br_value"), col(srcColAliased).cast("string"),
-        lit(s"${mapping.targetColumn}_target_value"), col(tgtColAliased).cast("string"),
-        lit(s"${mapping.sourceColumn}_vs_${mapping.targetColumn}_match_status"), col(s"${mapping.sourceColumn}_vs_${mapping.targetColumn}_match").cast("string")
-      )
+      // This is the boolean column derived from (srcCol <=> tgtCol)
+      val matchCompareCol = col(s"${mapping.sourceColumn}_vs_${mapping.targetColumn}_match")
+
+      when(not(matchCompareCol), // Only create a struct if this specific pair is a mismatch
+        struct(
+          lit(mapping.sourceColumn).alias("source_column_name"), // Column from BR output
+          col(srcColAliased).cast(StringType).alias("source_value"),
+          lit(mapping.targetColumn).alias("target_column_name"), // Column from Target table
+          col(tgtColAliased).cast(StringType).alias("target_value")
+        )
+      ).otherwise(lit(null)) // If they match, produce null for this mapping's detail struct
     }
 
+    // Filter out the nulls (where individual pairs matched) and create a JSON array of the mismatch structs
     val mismatchDetailsFinalExpr = when(col("recon_status") === "MISMATCHED_BR_TARGET",
-        to_json(create_map(mismatchDetailMapEntries:_*))
-    ).otherwise(lit(null).cast("string"))
+      to_json(expr(s"filter(array(${mismatchDetailStructs.map(_.expr.sql).mkString(",")}), x -> x is not null)"))
+    ).otherwise(lit(null).cast(StringType)) // Consistent StringType for null literal
 
     (statusExpr, mismatchDetailsFinalExpr.alias("mismatch_details"))
   }
