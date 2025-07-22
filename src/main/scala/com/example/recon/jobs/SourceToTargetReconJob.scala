@@ -48,7 +48,6 @@ class SourceToTargetReconJob extends ReconciliationJob with LazyLogging {
     // 1. Select and Alias source columns based on mapping (and include PKs)
     // Mappings define which columns to compare. PKs are used for joining.
     // All mapped source columns + all PK columns from source must be selected.
-    val sourceMappingMap = config.parsedColumnMappings.map(m => m.sourceColumn -> m.targetColumn).toMap
     val requiredSourceCols = (config.parsedColumnMappings.map(_.sourceColumn) ++ pkCols).distinct
 
     // Ensure all required columns exist in source
@@ -139,11 +138,12 @@ class SourceToTargetReconJob extends ReconciliationJob with LazyLogging {
    * Other columns (not PK, not mapped source) are dropped.
    */
   private def aliasSourceColumnsForJoin(df: DataFrame, mappings: List[ColumnMapping], pkCols: List[String], suffix: String): DataFrame = {
-    val mappedSourceCols = mappings.map(_.sourceColumn)
-    val columnsToSelectAndAlias = (pkCols ++ mappedSourceCols).distinct
+    val sourceMappingMap = mappings.map(m => m.sourceColumn -> m.targetColumn).toMap
+    val columnsToSelectAndAlias = (pkCols ++ mappings.map(_.sourceColumn)).distinct
 
     val selectExpressions = columnsToSelectAndAlias.map { colName =>
-      df(colName).alias(s"${colName}${suffix}")
+      val aliasName = sourceMappingMap.getOrElse(colName, colName)
+      df(colName).alias(s"${aliasName}${suffix}")
     }
     df.select(selectExpressions: _*)
   }
